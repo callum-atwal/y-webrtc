@@ -1,25 +1,25 @@
-import * as ws from 'lib0/websocket.js'
-import * as map from 'lib0/map.js'
-import * as error from 'lib0/error.js'
-import * as random from 'lib0/random.js'
-import * as encoding from 'lib0/encoding.js'
-import * as decoding from 'lib0/decoding.js'
-import { Observable } from 'lib0/observable.js'
-import * as logging from 'lib0/logging.js'
-import * as promise from 'lib0/promise.js'
 import * as bc from 'lib0/broadcastchannel.js'
 import * as buffer from 'lib0/buffer.js'
+import * as decoding from 'lib0/decoding.js'
+import * as encoding from 'lib0/encoding.js'
+import * as error from 'lib0/error.js'
+import * as logging from 'lib0/logging.js'
+import * as map from 'lib0/map.js'
+import * as math from 'lib0/math.js'
 import { createMutex } from 'lib0/mutex.js'
-
-import * as Y from 'yjs' // eslint-disable-line
+import { Observable } from 'lib0/observable.js'
+import * as promise from 'lib0/promise.js'
+import * as random from 'lib0/random.js'
+import * as ws from 'lib0/websocket.js'
 import Peer from 'simple-peer/simplepeer.min.js'
-
-import * as syncProtocol from 'y-protocols/sync.js'
 import * as awarenessProtocol from 'y-protocols/awareness.js'
 
+import * as syncProtocol from 'y-protocols/sync.js'
+
+import * as Y from 'yjs' // eslint-disable-line
 import * as cryptoutils from './crypto.js'
 
-const log = logging.createModuleLogger('y-webrtc')
+const log = require('debug')('app:y-webrtc')
 
 const messageSync = 0
 const messageQueryAwareness = 3
@@ -105,7 +105,7 @@ const readMessage = (room, buf, syncedCallback) => {
           added,
           removed,
           webrtcPeers: Array.from(room.webrtcConns.keys()),
-          bcPeers: Array.from(room.bcConns)
+          bcPeers: Array.from(room.bcConns),
         }])
         broadcastBcPeerId(room)
       }
@@ -145,7 +145,8 @@ const sendWebrtcConn = (webrtcConn, encoder) => {
   log('send message to ', logging.BOLD, webrtcConn.remotePeerId, logging.UNBOLD, logging.GREY, ' (', webrtcConn.room.name, ')', logging.UNCOLOR)
   try {
     webrtcConn.peer.send(encoding.toUint8Array(encoder))
-  } catch (e) {}
+  } catch (e) {
+  }
 }
 
 /**
@@ -157,7 +158,8 @@ const broadcastWebrtcConn = (room, m) => {
   room.webrtcConns.forEach(conn => {
     try {
       conn.peer.send(m)
-    } catch (e) {}
+    } catch (e) {
+    }
   })
 }
 
@@ -167,18 +169,18 @@ export class WebrtcConn {
    * @param {boolean} initiator
    * @param {string} remotePeerId
    * @param {Room} room
+   * @param {Object} peerSettings
    */
-  constructor (signalingConn, initiator, remotePeerId, room) {
+  constructor(signalingConn, initiator, remotePeerId, room, peerSettings) {
     log('establishing connection to ', logging.BOLD, remotePeerId)
     this.room = room
     this.remotePeerId = remotePeerId
     this.closed = false
     this.connected = false
     this.synced = false
-    /**
-     * @type {any}
-     */
-    this.peer = new Peer({ initiator })
+    const settings = { initiator, ...peerSettings }
+    log('Peer settings', settings)
+    this.peer = new Peer(settings)
     this.peer.on('signal', signal => {
       publishSignalingMessage(signalingConn, room, { to: remotePeerId, from: room.peerId, type: 'signal', signal })
     })
@@ -210,7 +212,7 @@ export class WebrtcConn {
           removed: [this.remotePeerId],
           added: [],
           webrtcPeers: Array.from(room.webrtcConns.keys()),
-          bcPeers: Array.from(room.bcConns)
+          bcPeers: Array.from(room.bcConns),
         }])
       }
       checkIsSynced(room)
@@ -227,18 +229,9 @@ export class WebrtcConn {
         sendWebrtcConn(this, answer)
       }
     })
-    this.peer.on('stream', stream => {
-      var video = document.querySelector('video');
-      if ('srcObject' in video) {
-        // @ts-ignore
-        video.srcObject = stream
-      } else {
-        // @ts-ignore
-        video.src = window.URL.createObjectURL(stream) // for older browsers
-      }
-    })
   }
-  destroy () {
+
+  destroy() {
     this.peer.destroy()
   }
 }
@@ -249,8 +242,8 @@ export class WebrtcConn {
  */
 const broadcastBcMessage = (room, m) => cryptoutils.encrypt(m, room.key).then(data =>
   room.mux(() =>
-    bc.publish(room.name, data)
-  )
+    bc.publish(room.name, data),
+  ),
 )
 
 /**
@@ -272,18 +265,25 @@ const announceSignalingInfo = room => {
     // only subcribe if connection is established, otherwise the conn automatically subscribes to all rooms
     if (conn.connected) {
       conn.send({ type: 'subscribe', topics: [room.name] })
-      publishSignalingMessage(conn, room, { type: 'announce', from: room.peerId })
+      if (room.webrtcConns.size < room.provider.maxConns) {
+        publishSignalingMessage(conn, room, { type: 'announce', from: room.peerId })
+      }
     }
   })
 }
 
+/**
+ * @param {Room} room
+ */
 const broadcastBcPeerId = room => {
-  // broadcast peerId via broadcastchannel
-  const encoderPeerIdBc = encoding.createEncoder()
-  encoding.writeVarUint(encoderPeerIdBc, messageBcPeerId)
-  encoding.writeUint8(encoderPeerIdBc, 1)
-  encoding.writeVarString(encoderPeerIdBc, room.peerId)
-  broadcastBcMessage(room, encoding.toUint8Array(encoderPeerIdBc))
+  if (room.provider.filterBcConns) {
+    // broadcast peerId via broadcastchannel
+    const encoderPeerIdBc = encoding.createEncoder()
+    encoding.writeVarUint(encoderPeerIdBc, messageBcPeerId)
+    encoding.writeUint8(encoderPeerIdBc, 1)
+    encoding.writeVarString(encoderPeerIdBc, room.peerId)
+    broadcastBcMessage(room, encoding.toUint8Array(encoderPeerIdBc))
+  }
 }
 
 export class Room {
@@ -293,7 +293,7 @@ export class Room {
    * @param {string} name
    * @param {CryptoKey|null} key
    */
-  constructor (doc, provider, name, key) {
+  constructor(doc, provider, name, key) {
     /**
      * Do not assume that peerId is unique. This is only meant for sending signaling messages.
      *
@@ -326,11 +326,12 @@ export class Room {
     this._bcSubscriber = data =>
       cryptoutils.decrypt(new Uint8Array(data), key).then(m =>
         this.mux(() => {
-          const reply = readMessage(this, m, () => {})
+          const reply = readMessage(this, m, () => {
+          })
           if (reply) {
             broadcastBcMessage(this, encoding.toUint8Array(reply))
           }
-        })
+        }),
       )
     /**
      * Listens to Yjs updates and sends them to remote peers
@@ -368,7 +369,8 @@ export class Room {
       })
     })
   }
-  connect () {
+
+  connect() {
     // signal through all available signaling connections
     announceSignalingInfo(this)
     const roomName = this.name
@@ -396,7 +398,8 @@ export class Room {
     encoding.writeVarUint8Array(encoderAwarenessState, awarenessProtocol.encodeAwarenessUpdate(this.awareness, [this.doc.clientID]))
     broadcastBcMessage(this, encoding.toUint8Array(encoderAwarenessState))
   }
-  disconnect () {
+
+  disconnect() {
     // signal through all available signaling connections
     signalingConns.forEach(conn => {
       if (conn.connected) {
@@ -417,7 +420,8 @@ export class Room {
     this.awareness.off('change', this._awarenessUpdateHandler)
     this.webrtcConns.forEach(conn => conn.destroy())
   }
-  destroy () {
+
+  destroy() {
     this.disconnect()
   }
 }
@@ -455,7 +459,7 @@ const publishSignalingMessage = (conn, room, data) => {
 }
 
 export class SignalingConn extends ws.WebsocketClient {
-  constructor (url) {
+  constructor(url, peerSettings) {
     super(url)
     /**
      * @type {Set<WebrtcProvider>}
@@ -466,7 +470,7 @@ export class SignalingConn extends ws.WebsocketClient {
       const topics = Array.from(rooms.keys())
       this.send({ type: 'subscribe', topics })
       rooms.forEach(room =>
-        publishSignalingMessage(this, room, { type: 'announce', from: room.peerId })
+        publishSignalingMessage(this, room, { type: 'announce', from: room.peerId }),
       )
     })
     this.on('message', m => {
@@ -484,21 +488,24 @@ export class SignalingConn extends ws.WebsocketClient {
               // ignore messages that are not addressed to this conn, or from clients that are connected via broadcastchannel
               return
             }
-            const emitPeerChange = webrtcConns.has(data.from) ? () => {} : () =>
+            const emitPeerChange = webrtcConns.has(data.from) ? () => {
+            } : () =>
               room.provider.emit('peers', [{
                 removed: [],
                 added: [data.from],
                 webrtcPeers: Array.from(room.webrtcConns.keys()),
-                bcPeers: Array.from(room.bcConns)
+                bcPeers: Array.from(room.bcConns),
               }])
             switch (data.type) {
               case 'announce':
-                map.setIfUndefined(webrtcConns, data.from, () => new WebrtcConn(this, true, data.from, room))
-                emitPeerChange()
+                if (webrtcConns.size < room.provider.maxConns) {
+                  map.setIfUndefined(webrtcConns, data.from, () => new WebrtcConn(this, true, data.from, room, peerSettings))
+                  emitPeerChange()
+                }
                 break
               case 'signal':
                 if (data.to === peerId) {
-                  map.setIfUndefined(webrtcConns, data.from, () => new WebrtcConn(this, false, data.from, room)).peer.signal(data.signal)
+                  map.setIfUndefined(webrtcConns, data.from, () => new WebrtcConn(this, false, data.from, room, peerSettings)).peer.signal(data.signal)
                   emitPeerChange()
                 }
                 break
@@ -529,19 +536,26 @@ export class WebrtcProvider extends Observable {
    * @param {Array<string>} [opts.signaling]
    * @param {string?} [opts.password]
    * @param {awarenessProtocol.Awareness} [opts.awareness]
+   * @param {number} [opts.maxConns]
+   * @param {boolean} [opts.filterBcConns]
+   * @param {Object} [opts.peerSettings]
    */
-  constructor (
+  constructor(
     roomName,
     doc,
     {
       signaling = ['wss://signaling.yjs.dev', 'wss://y-webrtc-uchplqjsol.now.sh', 'wss://y-webrtc-signaling-eu.herokuapp.com', 'wss://y-webrtc-signaling-us.herokuapp.com'],
       password = null,
-      awareness = new awarenessProtocol.Awareness(doc)
-    } = {}
+      awareness = new awarenessProtocol.Awareness(doc),
+      maxConns = 20 + math.floor(random.rand() * 15), // just to prevent that exactly n clients form a cluster
+      filterBcConns = true,
+      peerSettings = {},
+    } = {},
   ) {
     super()
     this.roomName = roomName
     this.doc = doc
+    this.filterBcConns = filterBcConns
     /**
      * @type {awarenessProtocol.Awareness}
      */
@@ -549,6 +563,7 @@ export class WebrtcProvider extends Observable {
     this.shouldConnect = false
     this.signalingUrls = signaling
     this.signalingConns = []
+    this.maxConns = maxConns
     /**
      * @type {PromiseLike<CryptoKey | null>}
      */
@@ -565,18 +580,21 @@ export class WebrtcProvider extends Observable {
         this.room.disconnect()
       }
     })
+    this.peerSettings = peerSettings
     this.connect()
   }
+
   /**
    * @type {boolean}
    */
-  get connected () {
+  get connected() {
     return this.room !== null && this.shouldConnect
   }
-  connect () {
+
+  connect() {
     this.shouldConnect = true
     this.signalingUrls.forEach(url => {
-      const signalingConn = map.setIfUndefined(signalingConns, url, () => new SignalingConn(url))
+      const signalingConn = map.setIfUndefined(signalingConns, url, () => new SignalingConn(url, this.peerSettings))
       this.signalingConns.push(signalingConn)
       signalingConn.providers.add(this)
     })
@@ -584,7 +602,8 @@ export class WebrtcProvider extends Observable {
       this.room.connect()
     }
   }
-  disconnect () {
+
+  disconnect() {
     this.shouldConnect = false
     this.signalingConns.forEach(conn => {
       conn.providers.delete(this)
@@ -597,7 +616,8 @@ export class WebrtcProvider extends Observable {
       this.room.disconnect()
     }
   }
-  destroy () {
+
+  destroy() {
     // need to wait for key before deleting room
     this.key.then(() => {
       /** @type {Room} */ (this.room).destroy()
@@ -606,3 +626,4 @@ export class WebrtcProvider extends Observable {
     super.destroy()
   }
 }
+
