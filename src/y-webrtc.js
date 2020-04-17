@@ -351,7 +351,7 @@ export class Room {
      */
     this._docUpdateHandler = (update, origin) => {
       if (origin !== this) {
-        const encoder = encoding.createEncoder()
+        let encoder = encoding.createEncoder()
         encoding.writeVarUint(encoder, messageSync)
         syncProtocol.writeUpdate(encoder, update)
         broadcastRoomMessage(this, encoding.toUint8Array(encoder))
